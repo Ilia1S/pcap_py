@@ -9,6 +9,7 @@ import dpkt
 import pdb
 
 class PacketsProcessing:
+    START_OF_SCALE = 22.00
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
     NODE_1 = '10.0.6.22'
@@ -37,6 +38,7 @@ class PacketsProcessing:
         self.nodes_state = {self.NODE_1: False, self.NODE_2: False,
                             self.NODE_3: False, self.NODE_4: False}
         self.missing_nodes = []
+        self.unanswered_requests = []
         self.missing_node_detected = False
         self.missing_node_appears_again = False
         self.next_igmp_report_found = False
@@ -51,7 +53,7 @@ class PacketsProcessing:
             hex_data[16:18] + ':' + hex_data[18:20]
         self.last_request_number = pack_number
 
-    def timestamp_to_timetrace(self):
+    def unix_timestamp_to_timetrace(self):
         self.last_packet_time = datetime.datetime\
             .fromtimestamp(self.timestamp)\
             .strftime('%Y-%m-%d %H:%M:%S.%f')
@@ -64,6 +66,38 @@ class PacketsProcessing:
             f'{self.request_time_from_payload} (payload)'
             f'/ request ID {hex(self.request_id_src)}'
         )
+
+    def fill_unanswered_requests_list (self):
+        timestamp = datetime\
+            .datetime.fromtimestamp(
+                self.timestamp)
+        hours = timestamp.hour
+        minutes = timestamp.minute
+        seconds = timestamp.second
+        if seconds > 0:
+            minutes += 1
+        time_table_format = float(hours) + float(minutes / 100)
+        self.unanswered_requests.append(
+            time_table_format)
+
+    def draw_csv_table(self, hanging_nodes):
+        print(
+            f'\nDivisions on the scale with unanswered_requests to which '
+            f'{hanging_nodes[0]} did not respond'
+            f'({self.current_timezone}):\n{self.unanswered_requests}'
+        )
+        points_per_division = 0
+        for i in range(60):
+            i /= 100
+            for time in self.unanswered_requests:
+                if (self.START_OF_SCALE + i) < time and \
+                    time <= (self.START_OF_SCALE + i + 0.01):
+                    points_per_division += 1
+            print(
+                f'{round(self.START_OF_SCALE + i + 0.01, 2)}; '
+                f'{points_per_division}'
+            )
+            points_per_division = 0
 
     def udp_processing(self, pack_number, ip, udp_packet):
         if isinstance(ip, dpkt.ip.IP):
@@ -194,13 +228,12 @@ class PacketsProcessing:
     def find_unanswered_requests(self, pcap_file, hanging_nodes):
         print(f'Hanging nodes: {hanging_nodes}\n')
         self.first_round_finished = False
-        unanswered_requests = []
         pack_number = 0
         with open(pcap_file, 'rb') as f:
             packets = dpkt.pcapng.Reader(f)
             for self.timestamp, pack in packets:
                 pack_number += 1
-                self.timestamp_to_timetrace()
+                self.unix_timestamp_to_timetrace()
                 eth = dpkt.ethernet.Ethernet(pack)
                 ip = eth.data
                 if not hasattr(ip, 'data'):
@@ -219,8 +252,8 @@ class PacketsProcessing:
                             for node in hanging_nodes:
                                 if not self.nodes_state[node]:
                                     self.output_unanswered_request(node)
-                                    unanswered_requests.append(
-                                        self.last_packet_time) # improve for multiple hanging_nodes, not only 1
+                                    self.fill_unanswered_requests_list() # improve for multiple hanging_nodes, not only 1
+
                         if hasattr(packet_type, 'data'):
                             self.extract_data_from_udp_request(
                                 pack_number, packet_type)
@@ -235,10 +268,8 @@ class PacketsProcessing:
                         for node in self.all_nodes:
                             if src == node:
                                 self.udp_nodes_processing(packet_type, src)
-        print(
-            f'\n{hanging_nodes[0]} ({self.current_timezone}):'
-            f'\n{unanswered_requests}'
-        )
+
+#        self.draw_csv_table()
 
     def udp_dump_pcap(self, pcap_file):
         pack_number = 0
@@ -246,7 +277,7 @@ class PacketsProcessing:
             packets = dpkt.pcapng.Reader(f)
             for self.timestamp, pack in packets:
                 pack_number += 1
-                self.timestamp_to_timetrace()
+                self.unix_timestamp_to_timetrace()
                 eth = dpkt.ethernet.Ethernet(pack)
                 ip = eth.data
                 if not hasattr(ip, 'data'):
@@ -257,9 +288,10 @@ class PacketsProcessing:
                     continue
                 if isinstance(packet_type, dpkt.igmp.IGMP):
                     self.igmp_processing(pack_number, ip)
-            
+
         hanging_nodes = self.output_results()
         self.find_unanswered_requests(pcap_file, hanging_nodes)
+        return hanging_nodes
 
     def output_results(self):
         if not self.next_igmp_report_found:
@@ -304,7 +336,9 @@ def main():
     args = parser.parse_args()
     try:
         pcap_object = PacketsProcessing()
-        pcap_object.udp_dump_pcap(args.pcap_file)
+        hanging_nodes = pcap_object.udp_dump_pcap(args.pcap_file)
+        if args.csv:
+            pcap_object.draw_csv_table(hanging_nodes)
         sys.exit(0)
     except FileNotFoundError as fe:
         print(fe)
