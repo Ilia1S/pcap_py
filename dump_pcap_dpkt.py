@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from argparse import ArgumentParser
+import argparse
 import datetime
 import sys
 from traceback import print_exc
@@ -9,7 +9,6 @@ import dpkt
 import pdb
 
 class PacketsProcessing:
-    START_OF_SCALE = 22.00
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
     NODE_1 = '10.0.6.22'
@@ -17,6 +16,8 @@ class PacketsProcessing:
     NODE_3 = '10.0.8.22'
     NODE_4 = '10.0.8.23'
     IGMP_MULTICAST = '224.0.0.1'
+    NUMBER_OF_DIVISIONS = 297
+    VALUE_OF_DIVISION = 15
 
     def __init__(self):
         self.current_timezone = datetime.datetime.now(datetime.timezone.utc)\
@@ -67,34 +68,22 @@ class PacketsProcessing:
             f'/ request ID {hex(self.request_id_src)}'
         )
 
-    def fill_unanswered_requests_list (self):
-        timestamp = datetime\
-            .datetime.fromtimestamp(
-                self.timestamp)
-        hours = timestamp.hour
-        minutes = timestamp.minute
-        seconds = timestamp.second
-        if seconds > 0:
-            minutes += 1
-        time_table_format = float(hours) + float(minutes / 100)
-        self.unanswered_requests.append(
-            time_table_format)
-
-    def draw_csv_table(self, hanging_nodes):
+    def draw_csv_table(self, hanging_nodes, start_of_scale):
         print(
             f'\nDivisions on the scale with unanswered_requests to which '
             f'{hanging_nodes[0]} did not respond'
             f'({self.current_timezone}):\n{self.unanswered_requests}'
         )
         points_per_division = 0
-        for i in range(60):
-            i /= 100
+        for i in range(self.NUMBER_OF_DIVISIONS):
             for time in self.unanswered_requests:
-                if (self.START_OF_SCALE + i) < time and \
-                    time <= (self.START_OF_SCALE + i + 0.01):
+                if (start_of_scale + datetime.timedelta(minutes=i* \
+                    self.VALUE_OF_DIVISION)) < time and \
+                    time <= (start_of_scale + datetime.timedelta(minutes=(i+1)* \
+                    self.VALUE_OF_DIVISION)):
                     points_per_division += 1
             print(
-                f'{round(self.START_OF_SCALE + i + 0.01, 2)}; '
+                f'{start_of_scale + datetime.timedelta(minutes=(i+1)*self.VALUE_OF_DIVISION)}; '
                 f'{points_per_division}'
             )
             points_per_division = 0
@@ -127,8 +116,8 @@ class PacketsProcessing:
                     print(
                         f'Next request packet to which {missing_node} '
                         f'responds is #{self.last_request_number}/ '
-                        f'{self.last_packet_time} ({self.current_timezone})/ '
-                        f'{self.request_time_from_payload} (payload)/ '
+                        f'{self.last_packet_time} ({self.current_timezone})/'
+                        f' {self.request_time_from_payload} (payload)/ '
                         f'request ID {hex(self.request_id_src)}\n'
                     )
                 self.missing_node_appears_again = True
@@ -252,7 +241,12 @@ class PacketsProcessing:
                             for node in hanging_nodes:
                                 if not self.nodes_state[node]:
                                     self.output_unanswered_request(node)
-                                    self.fill_unanswered_requests_list() # improve for multiple hanging_nodes, not only 1
+                                    # improve for multiple hanging_nodes, not only 1
+                                    unanswered_req_timestamp = \
+                                        datetime.datetime\
+                                        .fromtimestamp(self.timestamp)
+                                    self.unanswered_requests.append(
+                                        unanswered_req_timestamp)
 
                         if hasattr(packet_type, 'data'):
                             self.extract_data_from_udp_request(
@@ -268,8 +262,6 @@ class PacketsProcessing:
                         for node in self.all_nodes:
                             if src == node:
                                 self.udp_nodes_processing(packet_type, src)
-
-#        self.draw_csv_table()
 
     def udp_dump_pcap(self, pcap_file):
         pack_number = 0
@@ -303,8 +295,7 @@ class PacketsProcessing:
                     f'\nNo next responses from {missing_node}'
                 )
                 hanging_nodes = [node for node in self.all_nodes \
-                    if node not in self.missing_nodes] # nodes that respond, but not always
-
+                    if node not in self.missing_nodes] # nodes that is alive, but sometimes hang
         print(
             f'\nLatest request is #{self.last_request_number}'
             f'/ {self.last_packet_time} ({self.current_timezone})/ '
@@ -327,18 +318,28 @@ class PacketsProcessing:
         
         return hanging_nodes
 
+def valid_date(s):
+    try:
+        return datetime.datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        msg = "Invalid format for --csv: '{0}'. \
+Format must be YYYY-MM-DD HH:MM:SS".format(s)
+        raise argparse.ArgumentTypeError(msg)
+
 def main():
-    parser = ArgumentParser(
+    parser = argparse.ArgumentParser(
         description='Analysis of UDP and IGMP packets in PCAP files')
     parser.add_argument('pcap_file', help='Path to the pcap file')
-    parser.add_argument('--csv', action="store_true",
-                        help='Enable csv generation')
+    parser.add_argument('--csv',
+        help='Enable csv generation with specified start scale value',
+        metavar='DATE_AND_TIME', type=valid_date, required=True
+    )
     args = parser.parse_args()
     try:
         pcap_object = PacketsProcessing()
         hanging_nodes = pcap_object.udp_dump_pcap(args.pcap_file)
         if args.csv:
-            pcap_object.draw_csv_table(hanging_nodes)
+            pcap_object.draw_csv_table(hanging_nodes, args.csv)
         sys.exit(0)
     except FileNotFoundError as fe:
         print(fe)
