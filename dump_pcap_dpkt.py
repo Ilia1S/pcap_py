@@ -7,8 +7,6 @@ from traceback import print_exc
 
 import dpkt
 
-import pdb
-
 class PacketsProcessing:
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
@@ -21,9 +19,7 @@ class PacketsProcessing:
     VALUE_OF_DIVISION = 254 # in minutes
 
     def __init__(self):
-        self.current_timezone = datetime.datetime.now(datetime.timezone.utc)\
-            .astimezone().tzname()
-        self.first_round_finished = False
+        self.delta = 0
         self.first_udp_round_finished = False
         self.first_igmp_round_finished = False
         self.igmp_query_number = None
@@ -35,6 +31,7 @@ class PacketsProcessing:
         self.last_request_time = None
         self.timestamp = None
         self.request_time_from_payload = None
+        self.payload_time_object = None
         self.last_packet_time = None
         self.igmp_dict = {}
         self.all_nodes = [self. NODE_1, self.NODE_2, self.NODE_3,
@@ -66,24 +63,34 @@ class PacketsProcessing:
         self.last_request_number = pack_number
 
     def unix_timestamp_to_timetrace(self):
-        self.last_packet_time = datetime.datetime\
-            .fromtimestamp(self.timestamp)\
-            .strftime('%Y-%m-%d %H:%M:%S.%f')
+        if not self.payload_time_object:
+            self.last_packet_time = datetime.datetime\
+                .utcfromtimestamp(self.timestamp)\
+                .strftime('%Y-%m-%d %H:%M:%S.%f')
+        else:
+            self.last_packet_time = (datetime.datetime\
+                .utcfromtimestamp(self.timestamp) + \
+                    self.delta).strftime('%Y-%m-%d %H:%M:%S.%f')
+
+    def calculate_delta_from_payload_time(self):
+        self.payload_time_object = datetime.datetime.strptime(
+            self.request_time_from_payload, "%Y-%m-%d %H:%M:%S")
+        last_packet_time_object = datetime.datetime\
+            .strptime(self.last_packet_time, "%Y-%m-%d %H:%M:%S.%f")
+        self.delta = self.payload_time_object - last_packet_time_object
 
     def output_unanswered_request_or_query(self, node, prot):
         if prot == 'udp':
             print(
                 f"{node} isn't responding for UDP request. Unanswered request"
-                f' is #{self.last_request_number}/ {self.last_request_time} '
-                f'({self.current_timezone})/ '
-                f'{self.request_time_from_payload} (payload)'
-                f'/ request ID {hex(self.request_id_src)}'
+                f' is #{self.last_request_number}/ {self.last_request_time}/'
+                f' request ID {hex(self.request_id_src)}'
             )
         elif prot == 'igmp':
             print(
                 f"{node} isn't responding for membership query. "
                 f'Unanswered query is #{self.igmp_query_number}/ '
-                f'{self.igmp_query_time} ({self.current_timezone})'
+                f'{self.igmp_query_time}'
             )
 
     def draw_csv_table(self, scale_timestamps_objects,
@@ -92,7 +99,7 @@ class PacketsProcessing:
         def print_missing(data_dict, data_type):
             if data_dict:
                 print(
-                    f'\nDivision number; Timestamp in {self.current_timezone}; '
+                    '\nDivision number; Timestamp; '
                     f'Number of {data_type}:\n'
                 )
                 iterator = iter(data_dict.items())
@@ -105,8 +112,7 @@ class PacketsProcessing:
                 if time_list:
                     print(
                         f'\n{key}:\nDivision number; '
-                        f'Timestamp in {self.current_timezone}; '
-                        f'Number of {data_type}:\n'
+                        f'Timestamp; Number of {data_type}:\n'
                     )
                     self.process_time_list(time_list, scale_timestamps_objects,
                                            scale_timestamps_strings)
@@ -188,16 +194,16 @@ class PacketsProcessing:
         if dst == self.MULTICAST_IP and dport == self.DPORT:
             self.udp_server_processing(
                 pack_number, udp_packet, scale_timestamps_strings)
-            self.first_round_finished = True
+            self.first_udp_round_finished = True
             self.pre_timestamp = self.timestamp
             self.last_request_time = self.last_packet_time
-        elif self.first_round_finished and src in self.all_nodes:
+        elif self.first_udp_round_finished and src in self.all_nodes:
             if not self.missing_node_appears_again:
                 self.udp_nodes_processing(udp_packet, src)
 
     def udp_server_processing(self, pack_number, udp_packet,
                               scale_timestamps_strings):
-        if not self.first_round_finished or \
+        if not self.first_udp_round_finished or \
             all(self.nodes_state_udp.values()):
             # if it is the first round or a request is answered
             if self.missing_node_detected and not \
@@ -206,8 +212,7 @@ class PacketsProcessing:
                     print(
                         f'Next request packet to which {missing_node} '
                         f'responds is #{self.last_request_number}/ '
-                        f'{self.last_packet_time} ({self.current_timezone})/'
-                        f' {self.request_time_from_payload} (payload)/ '
+                        f'{self.last_packet_time}/ '
                         f'request ID {hex(self.request_id_src)}\n'
                     )
                 self.missing_node_appears_again = True
@@ -220,14 +225,13 @@ class PacketsProcessing:
                             node, 'udp')
                         if node in self.igmp_dict:
                             print(
-                                f'Latest membership report from '
+                                'Latest membership report from '
                                 f'{node} is #{self.igmp_dict[node][0]}/ '
-                                f'{self.igmp_dict[node][1]} '
-                                f'({self.current_timezone})'
+                                f'{self.igmp_dict[node][1]}'
                             )
                         else:
                             print(
-                                f'No previous membership reports from'
+                                'No previous membership reports from'
                                 f' {node}\n'
                             )
                         self.missing_nodes.append(node)
@@ -235,19 +239,21 @@ class PacketsProcessing:
 
         if hasattr(udp_packet, 'data'):
             self.extract_data_from_udp_request(pack_number, udp_packet)
+            if not self.payload_time_object:
+                self.calculate_delta_from_payload_time()
+                self.unix_timestamp_to_timetrace()
+
         else:
             print(f'Packet #{pack_number} has no data')
 
-        if self.first_round_finished:
+        if self.first_udp_round_finished:
             self.nodes_state_udp = {
                 node: False for node in self.nodes_state_udp} # reset response states of all nodes to False
             delay = round(self.timestamp - self.pre_timestamp, 1)
             if delay - 0.2 > 0.1:
                 print(
                     f'Missing request(s) detected - no requests for {delay}s'
-                    f' up to #{pack_number}/ {self.last_packet_time} '
-                    f'({self.current_timezone})/ '
-                    f'{self.request_time_from_payload} (payload)/ '
+                    f' up to #{pack_number}/ {self.last_packet_time}/ '
                     f'request ID {hex(self.request_id_src)}'
                 )
                 missing_requests = round(delay / 0.2)
@@ -256,8 +262,7 @@ class PacketsProcessing:
         else:
             print(
                 f'First request packet is #{self.last_request_number}'
-                f'/ {self.last_packet_time} ({self.current_timezone})/ '
-                f'{self.request_time_from_payload} (payload)/ '
+                f'/ {self.last_packet_time}/ '
                 f'request ID {hex(self.request_id_src)}'
             )
 
@@ -282,7 +287,7 @@ class PacketsProcessing:
             if not self.igmp_query_number:
                 print(
                     f'First membership query is #{pack_number}/ '
-                    f'{self.last_packet_time} ({self.current_timezone})\n'
+                    f'{self.last_packet_time}\n'
                 )
                 self.igmp_query_number = pack_number
                 self.igmp_query_timestamp = self.timestamp
@@ -294,8 +299,8 @@ class PacketsProcessing:
                     print(
                         'Membership query(s) missing - no queries for '
                         f'{queries_interval}s up to '
-                        f'#{pack_number}/ {self.last_packet_time} '
-                        f'({self.current_timezone})')
+                        f'#{pack_number}/ {self.last_packet_time}'
+                    )
                     missing_queries = round(queries_interval / 12)
                     self.missing_queries[scale_timestamps_strings[
                         self.number_of_division+1]] += missing_queries
@@ -305,14 +310,14 @@ class PacketsProcessing:
                 print(
                     f'Next membership report from {missing_node} is '
                     f'#{self.igmp_dict[missing_node][0]}/ '
-                    f'{self.igmp_dict[missing_node][1]} '
-                    f'({self.current_timezone})'
+                    f'{self.igmp_dict[missing_node][1]}'
                 )
                 self.next_igmp_report_found = True
 
     def find_unanswered_requests_and_queries(
         self, pcap_file,hanging_nodes_udp, hanging_nodes_igmp):
         pack_number = 0
+        self.first_udp_round_finished = False
         print(f'Hanging nodes (udp): {hanging_nodes_udp}\n')
         print(f'Hanging nodes (igmp): {hanging_nodes_igmp}\n')
         with open(pcap_file, 'rb') as f:
@@ -412,20 +417,19 @@ class PacketsProcessing:
                     if node not in self.missing_nodes] # nodes that are alive, but sometimes hang
         print(
             f'\nLatest request is #{self.last_request_number}'
-            f'/ {self.last_packet_time} ({self.current_timezone})/ '
-            f'{self.request_time_from_payload} (payload)/ '
+            f'/ {self.last_packet_time}/ '
             f'request ID {hex(self.request_id_src)}\n'
         )
         print(
             f'Latest membership query is #{self.igmp_query_number}/ '
-            f'{self.igmp_query_time} ({self.current_timezone})\n'
+            f'{self.igmp_query_time}\n'
         )
         for src in self.all_nodes:
             if src in self.igmp_dict:
                 print(
                     f'Latest membership report from {src} is '
                     f'#{self.igmp_dict[src][0]}/ '
-                    f'{self.igmp_dict[src][1]} ({self.current_timezone})\n'
+                    f'{self.igmp_dict[src][1]}\n'
                 )
             else:
                 print(f'No membership reports from {src}\n')
