@@ -7,6 +7,8 @@ from traceback import print_exc
 
 import dpkt
 
+import pdb
+
 class PacketsProcessing:
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
@@ -78,6 +80,7 @@ class PacketsProcessing:
         last_packet_time_object = datetime.datetime\
             .strptime(self.last_packet_time, "%Y-%m-%d %H:%M:%S.%f")
         self.delta = self.payload_time_object - last_packet_time_object
+        print(f'\nDELTA = {self.delta}\n')
 
     def output_unanswered_request_or_query(self, node, prot):
         if prot == 'udp':
@@ -95,48 +98,43 @@ class PacketsProcessing:
 
     def draw_csv_table(self, scale_timestamps_objects,
                        scale_timestamps_strings):
-
-        def print_missing(data_dict, data_type):
-            if data_dict:
-                print(
-                    '\nDivision number; Timestamp; '
-                    f'Number of {data_type}:\n'
-                )
-                iterator = iter(data_dict.items())
-                next(iterator)
-                for i, (key, value) in enumerate(iterator, 1):
-                    print(f'{i}; {key}; {value}')
-
-        def print_unanswered(data_dict, data_type):
+        def format_unanswered(data_dict):
             for key, time_list in data_dict.items():
                 if time_list:
-                    print(
-                        f'\n{key}:\nDivision number; '
-                        f'Timestamp; Number of {data_type}:\n'
-                    )
-                    self.process_time_list(time_list, scale_timestamps_objects,
-                                           scale_timestamps_strings)
+                    unanswered_req_per_node = self.process_time_list(
+                        time_list, scale_timestamps_objects,
+                        scale_timestamps_strings)
+            return unanswered_req_per_node
 
-        print_missing(self.missing_requests, 'missing requests')
-        print_missing(self.missing_queries, 'missing queries')
-
-        print_unanswered(self.unanswered_requests, 'unanswered requests')
-
-        print_unanswered(self.unanswered_queries, 'unanswered queries')
+        unanswered_req_per_node = format_unanswered(self.unanswered_requests)
+        unanswered_que_per_node = format_unanswered(self.unanswered_queries)
+        combined_dict = {
+            key: [self.missing_requests[key], self.missing_queries[key],
+                  unanswered_req_per_node[key], unanswered_que_per_node[key]
+            ] for key in self.missing_requests
+        }
+        print(
+            '\nDivision number; Timestamp; '
+            'Missing requests; Missing queries; Unanswered requests; '
+            'Unanswered queries:\n'
+        )
+        for i, (key, value) in enumerate(combined_dict.items(), 1):
+            value_str = '; '.join(map(str, value))
+            print(f'{i}; {key}; {value_str}')
 
     def process_time_list(self, time_list, scale_timestamps_objects,
                           scale_timestamps_strings):
+        unanswered_per_node = {}
         points_per_division = 0
         for i in range(self.NUMBER_OF_DIVISIONS):
             for time in time_list:
                 if scale_timestamps_objects[i] < time \
                     <= scale_timestamps_objects[i+1]:
                     points_per_division += 1
-            print(
-                f'{i+1}; {scale_timestamps_strings[i+1]}; '
-                f'{points_per_division}'
-            )
+            unanswered_per_node[scale_timestamps_strings[i+1]] = \
+                points_per_division
             points_per_division = 0
+        return unanswered_per_node
 
     def udp_dump_pcap(self, pcap_file, start_of_scale):
         pack_number = 0
@@ -147,10 +145,10 @@ class PacketsProcessing:
                 for i in range(self.NUMBER_OF_DIVISIONS + 1)
         ]
         scale_timestamps_strings = [
-            ts.strftime('%Y-%m-%d %H:%M:%S.%f') \
+            ts.strftime('%Y-%m-%d %H:%M:%S') \
                 for ts in scale_timestamps_objects
         ]
-        missing_data = {division: 0 for division in scale_timestamps_strings}
+        missing_data = {division: 0 for division in scale_timestamps_strings[1:]}
         self.missing_requests = missing_data.copy()
         self.missing_queries = missing_data.copy()
 
