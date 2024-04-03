@@ -7,6 +7,8 @@ from traceback import print_exc
 
 import dpkt
 
+import pdb
+
 
 class PacketsProcessing:
     MULTICAST_IP = '239.192.1.17'
@@ -16,8 +18,8 @@ class PacketsProcessing:
     NODE_3 = '10.0.8.22'
     NODE_4 = '10.0.8.23'
     IGMP_MULTICAST = '224.0.0.1'
-    NUMBER_OF_DIVISIONS = 4320
-    VALUE_OF_DIVISION = 1 # in minutes
+    NUMBER_OF_DIVISIONS = 17
+    VALUE_OF_DIVISION = 254 # in minutes
 
     def __init__(self):
         self.first_udp_round_finished = False
@@ -133,7 +135,6 @@ class PacketsProcessing:
 
     def output_unanswered_request_or_query(self, node, prot):
         if prot == 'udp':
-            print('\n')
             self.unanswered_req_messages.append(
                 f'{node} not responding for UDP request. Unanswered request'
                 f' is #{self.last_request_number}/ {self.last_request_time}/'
@@ -147,18 +148,21 @@ class PacketsProcessing:
     def draw_csv_table(self, scale_timestamps_objects,
                        scale_timestamps_strings):
         def format_unanswered(data_dict):
+            unanswered_per_node = {}
             for key, time_list in data_dict.items():
                 if time_list:
                     unanswered_per_node = self.process_time_list(
                         time_list, scale_timestamps_objects,
                         scale_timestamps_strings)
+
             return unanswered_per_node
 
         unanswered_req_per_node = format_unanswered(self.unanswered_requests)
         unanswered_que_per_node = format_unanswered(self.unanswered_queries)
+
         combined_dict = {
-            key: [self.missing_requests[key], self.missing_queries[key],
-                  unanswered_req_per_node[key], unanswered_que_per_node[key]
+            key: [self.missing_requests.get(key), self.missing_queries.get(key),
+                  unanswered_req_per_node.get(key), unanswered_que_per_node.get(key)
             ] for key in self.missing_requests
         }
         print(
@@ -302,8 +306,8 @@ class PacketsProcessing:
                             )
                         else:
                             print(
-                                'No previous membership reports from'
-                                f' {node}'
+                                'No previous membership reports from '
+                                f'{node}'
                             )
                         self.missing_nodes.append(node)
                 self.missing_node_detected = True
@@ -322,7 +326,7 @@ class PacketsProcessing:
 
         if not self.first_udp_round_finished:
             print(
-                f'First request packet is #{self.last_request_number}'
+                f'\nFirst request packet is #{self.last_request_number}'
                 f'/ {self.last_packet_time}/ '
                 f'request ID {hex(self.request_id_src)}\n'
             )
@@ -347,7 +351,7 @@ class PacketsProcessing:
         if dst == self.IGMP_MULTICAST:
             if not self.igmp_query_number:
                 print(
-                    f'First membership query is #{pack_number}/ '
+                    f'\nFirst membership query is #{pack_number}/ '
                     f'{self.last_packet_time}\n'
                 )
                 self.igmp_query_timestamp = self.timestamp
@@ -384,13 +388,14 @@ class PacketsProcessing:
                 self.next_igmp_report_found = True
 
     def output_results(self):
+        print('\n')
         for message in self.unanswered_req_messages:
             print(message)
         if not self.missing_node_appears_again:
             for missing_node in self.missing_nodes:
                 print(f'No next responses from {missing_node}')
         print(
-            f'Latest request is #{self.last_request_number}'
+            f'\nLatest request is #{self.last_request_number}'
             f'/ {self.last_packet_time}/ '
             f'request ID {hex(self.request_id_src)}\n'
         )
@@ -401,8 +406,8 @@ class PacketsProcessing:
             for missing_node in self.missing_nodes:
                 print(f'No next membership reports from {missing_node}')
         print(
-            f'Latest membership query is #{self.igmp_query_number}/ '
-            f'{self.igmp_query_time}'
+            f'\nLatest membership query is #{self.igmp_query_number}/ '
+            f'{self.igmp_query_time}\n'
         )
 
         for src in self.all_nodes:
@@ -413,7 +418,7 @@ class PacketsProcessing:
                     f'{self.igmp_dict[src][1]}'
                 )
             else:
-                print(f'No membership reports from {src}')
+                print(f'No membership reports from {src} at all')
 
 def valid_date(s):
     try:
@@ -426,19 +431,21 @@ Format must be YYYY-MM-DD HH:MM:SS.ssssss"
 def main():
     parser = argparse.ArgumentParser(
         description='Analysis of UDP and IGMP packets in PCAP files')
-    parser.add_argument('pcap_file', help='Path to the pcap file')
-    parser.add_argument('--csv',
-        help='Enable csv generation with specified start scale value',
+    parser.add_argument('pcap_file', help='path to the pcap file')
+    parser.add_argument('--csv', metavar='start_of_scale',
+        help='enable csv generation with specified start scale value',
         type=valid_date, required=True
     )
-    parser.add_argument('-H', help='Specify the hanging node')
-    parser.add_argument('-P', action='store_true',
-        help='Convert time to payload time')
+    parser.add_argument('-H', '--hanging', metavar='ip_address',
+        help='specify the hanging node')
+    parser.add_argument('-P', '--payload', action='store_true',
+        help='convert time to payload time')
     args = parser.parse_args()
     try:
         pcap_object = PacketsProcessing()
         scale_timestamps_objects, scale_timestamps_strings = \
-            pcap_object.udp_dump_pcap(args.pcap_file, args.csv, args.P, args.H)
+            pcap_object.udp_dump_pcap(args.pcap_file, args.csv,
+                                      args.payload, args.hanging)
         pcap_object.draw_csv_table(scale_timestamps_objects,
                                    scale_timestamps_strings)
         sys.exit(0)
