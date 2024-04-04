@@ -7,6 +7,7 @@ from traceback import print_exc
 
 import dpkt
 
+
 NODE_1 = '10.0.6.22'
 NODE_2 = '10.0.6.23'
 NODE_3 = '10.0.8.22'
@@ -50,8 +51,6 @@ class PacketsProcessing:
         self.missing_node_appears_again = False
         self.next_igmp_report_found = False
         self.number_of_division = 0
-        self.unanswered_req_messages = []
-        self.unanswered_que_messages = []
 
     def extract_data_from_udp_request(self, pack_number, udp_packet):
         data = udp_packet.data
@@ -59,9 +58,9 @@ class PacketsProcessing:
         self.last_request_number = pack_number
 
     def unix_timestamp_to_string(self, delta):
-        self.last_packet_time = (datetime.datetime\
-            .utcfromtimestamp(self.timestamp) + \
-                delta).strftime('%Y-%m-%d %H:%M:%S.%f')
+        last_packet_time_object = datetime.datetime\
+            .utcfromtimestamp(self.timestamp)
+        self.last_packet_time = (last_packet_time_object + delta).strftime('%Y-%m-%d %H:%M:%S.%f')
 
     def read_time_from_hex_data(self, packet_type):
         data = packet_type.data
@@ -86,7 +85,7 @@ class PacketsProcessing:
 
     def create_missing_data_dict(self):
         missing_data = \
-            {division: 0 for division in self.scale_timestamps_strings[1:]}
+            {division: 0 for division in self.scale_timestamps_strings}
         self.missing_requests = missing_data.copy()
         self.missing_queries = missing_data.copy()
 
@@ -136,7 +135,7 @@ class PacketsProcessing:
         if requests_interval - 0.2 > 0.1:
             missing_requests = round(requests_interval / 0.2)
             self.missing_requests[self.scale_timestamps_strings[
-                self.number_of_division+1]] += missing_requests
+                self.number_of_division]] += missing_requests
             print(
                 f'Missing request(s) - no requests for {requests_interval}s'
                 f' up to #{pack_number}/ {self.last_packet_time}\n'
@@ -157,7 +156,7 @@ class PacketsProcessing:
             )
             missing_queries = round(queries_interval / 12)
             self.missing_queries[self.scale_timestamps_strings[
-                self.number_of_division+1]] += missing_queries
+                self.number_of_division]] += missing_queries
         self.igmp_query_timestamp = self.timestamp
 
     def check_for_range(self, pack_number, start_of_scale):
@@ -178,15 +177,17 @@ class PacketsProcessing:
 
     def output_unanswered_request_or_query(self, node, prot):
         if prot == 'udp':
-            self.unanswered_req_messages.append(
+            print(
                 f'{node} not responding for UDP request. Unanswered request'
                 f' is #{self.last_request_number}/ {self.last_request_time}/'
-                f' request ID {hex(self.request_id_src)}')
+                f' request ID {hex(self.request_id_src)}'
+            )
         elif prot == 'igmp':
-            self.unanswered_que_messages.append(
+            print(
                 f'{node} not responding for membership query. '
                 f'Unanswered query is #{self.igmp_query_number}/ '
-                f'{self.igmp_query_time}')
+                f'{self.igmp_query_time}'
+            )
 
     def draw_csv_table(self):
         def format_unanswered(data_dict):
@@ -201,8 +202,10 @@ class PacketsProcessing:
         unanswered_que_per_node = format_unanswered(self.unanswered_queries)
 
         combined_dict = {
-            key: [self.missing_requests.get(key), self.missing_queries.get(key),
-                  unanswered_req_per_node.get(key), unanswered_que_per_node.get(key)
+            key: [self.missing_requests.get(key),
+                  self.missing_queries.get(key),
+                  unanswered_req_per_node.get(key),
+                  unanswered_que_per_node.get(key)
             ] for key in self.missing_requests
         }
         print(
@@ -217,12 +220,12 @@ class PacketsProcessing:
     def process_time_list(self, time_list):
         unanswered_per_node = {}
         points_per_division = 0
-        for i in range(self.NUMBER_OF_DIVISIONS):
+        for i in range(self.NUMBER_OF_DIVISIONS+1):
             for time in time_list:
                 if self.scale_timestamps_objects[i] < time \
                     <= self.scale_timestamps_objects[i+1]:
                     points_per_division += 1
-            unanswered_per_node[self.scale_timestamps_strings[i+1]] = \
+            unanswered_per_node[self.scale_timestamps_strings[i]] = \
                 points_per_division
             points_per_division = 0
         return unanswered_per_node
@@ -300,7 +303,7 @@ class PacketsProcessing:
             )
 
     # if it is the first round or all requests are answered
-    def udp_when_all_respond(self): 
+    def udp_when_all_respond(self):
         if self.missing_node_detected and not \
             self.missing_node_appears_again:
             for missing_node in self.missing_nodes:
@@ -412,40 +415,31 @@ class PacketsProcessing:
                 self.next_igmp_report_found = True
 
     def output_results(self):
-        output_lines = ['\n']
-        output_lines.extend(self.unanswered_req_messages)
+        print('\n')
         if not self.missing_node_appears_again:
-            output_lines.extend(
-                f'No next responses from {missing_node}'
-                for missing_node in self.missing_nodes
-            )
-        output_lines.append(
+            for missing_node in self.missing_nodes:
+                print(f'No next responses from {missing_node}')
+        print(
             f'\nLatest request is #{self.last_request_number}'
             f'/ {self.last_packet_time}/ '
             f'request ID {hex(self.request_id_src)}\n'
         )
-        output_lines.extend(self.unanswered_que_messages)
         if not self.next_igmp_report_found:
-            output_lines.extend(
-                f'No next membership reports from {missing_node}'
-                for missing_node in self.missing_nodes
-            )
-        output_lines.append(
+            for missing_node in self.missing_nodes:
+                print(f'No next membership reports from {missing_node}')
+        print(
             f'\nLatest membership query is #{self.igmp_query_number}/ '
             f'{self.igmp_query_time}\n'
         )
-
         for src in ALL_NODES:
-            report_msg = 'No membership reports from {src} at all'
             if src in self.igmp_dict:
-                report_msg = (
+                print(
                     f'Latest membership report from {src} is '
                     f'#{self.igmp_dict[src][0]}/ '
                     f'{self.igmp_dict[src][1]}'
                 )
-            output_lines.append(report_msg.format(src=src))
-
-        print('\n'.join(output_lines))
+            else:
+                print(f'No membership reports from {src} at all')
 
 def valid_csv(s):
     try:
