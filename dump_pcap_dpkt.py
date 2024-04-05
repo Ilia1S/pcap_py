@@ -7,7 +7,6 @@ from traceback import print_exc
 
 import dpkt
 
-import pdb
 
 NODE_1 = '10.0.6.22'
 NODE_2 = '10.0.6.23'
@@ -20,10 +19,13 @@ class PacketsProcessing:
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
     IGMP_MULTICAST = '224.0.0.1'
-    NUMBER_OF_DIVISIONS = 17
-    VALUE_OF_DIVISION = 254 # in minutes
+    NUMBER_OF_DIVISIONS = 20 # 17 initially
+    VALUE_OF_DIVISION = 1.0 / 2.0 # in minutes, 254 initially
+    REQUESTS_INTERVAL = 0.2
+    QUERIES_INTERVAL = 12
 
     def __init__(self):
+        self.total_queries = 0
         self.first_udp_round_finished = False
         self.igmp_query_number = None
         self.igmp_query_time = None
@@ -42,6 +44,7 @@ class PacketsProcessing:
         self.nodes_state_igmp = {NODE_1: False, NODE_2: False,
                                  NODE_3: False, NODE_4: False}
         self.missing_nodes = []
+        self.all_requests = []
         self.missing_requests = {}
         self.missing_queries = {}
         self.unanswered_requests = {NODE_1: [], NODE_2: [], \
@@ -137,11 +140,13 @@ class PacketsProcessing:
                                            start_of_scale):
         requests_interval = round(
             self.timestamp - self.pre_request_timestamp, 1)
-        if requests_interval - 0.2 > 0.1:
-            missing_requests = round(requests_interval / 0.2)
-            self.missing_requests[self.scale_timestamps_strings[
-                self.number_of_division]] += missing_requests
-            if not start_of_scale:
+        if requests_interval - self.REQUESTS_INTERVAL > 0.1:
+            if start_of_scale:
+                missing_requests = round(
+                    requests_interval / self.REQUESTS_INTERVAL)
+                self.missing_requests[self.scale_timestamps_strings[
+                    self.number_of_division]] += missing_requests
+            else:
                 print(
                     f'Missing requests - no requests for {requests_interval}'
                     f's up to #{pack_number}/ {self.last_packet_time}\n'
@@ -152,7 +157,7 @@ class PacketsProcessing:
     def check_last_query_before_division(self, pack_number, start_of_scale):
         queries_interval = round(
             self.timestamp - self.igmp_query_timestamp, 1)
-        if queries_interval > 12.1:
+        if queries_interval > (self.QUERIES_INTERVAL + 0.1):
             if not start_of_scale:
                 print(
                     'Missing membership query(s) - no queries for '
@@ -161,9 +166,11 @@ class PacketsProcessing:
                     f'The previous query was #{self.igmp_query_number}/ '
                     f'{self.igmp_query_time}'
                 )
-            missing_queries = round(queries_interval / 12)
-            self.missing_queries[self.scale_timestamps_strings[
-                self.number_of_division]] += missing_queries
+            else:
+                missing_queries = \
+                    int((queries_interval - 0.1) // self.QUERIES_INTERVAL)
+                self.missing_queries[self.scale_timestamps_strings[
+                    self.number_of_division]] += missing_queries
         self.igmp_query_timestamp = self.timestamp
 
     def check_for_range(self, pack_number, start_of_scale):
@@ -291,6 +298,7 @@ class PacketsProcessing:
             self.first_udp_round_finished = True
             self.pre_request_timestamp = self.timestamp
             self.last_request_time = self.last_packet_time
+            self.all_requests.append(self.last_request_time)
         elif self.first_udp_round_finished and src in ALL_NODES:
             if not self.missing_node_appears_again:
                 self.udp_nodes_processing(udp_packet, src)
@@ -307,9 +315,8 @@ class PacketsProcessing:
             self.nodes_state_udp = {
                 # reset response states of all nodes to False
                 node: False for node in self.nodes_state_udp}
-            if start_of_scale:
-                self.check_last_request_before_division(pack_number,
-                                                        start_of_scale)
+            self.check_last_request_before_division(pack_number,
+                                                    start_of_scale)
 
         if hasattr(udp_packet, 'data'):
             self.extract_data_from_udp_request(pack_number, udp_packet)
@@ -424,9 +431,9 @@ class PacketsProcessing:
                         "%Y-%m-%d %H:%M:%S.%f")
                 self.unanswered_queries[node].append(
                     unanswered_query_timestamp)
-            if start_of_scale:
-                self.check_last_query_before_division(pack_number,
-                                                      start_of_scale)
+
+            self.check_last_query_before_division(pack_number,
+                                                  start_of_scale)
 
         self.igmp_query_number = pack_number
         self.igmp_query_time = self.last_packet_time
@@ -473,6 +480,7 @@ class PacketsProcessing:
                 )
             else:
                 print(f'No membership reports from {src} at all')
+
 
 def valid_csv(s):
     try:
