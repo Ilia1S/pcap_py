@@ -7,7 +7,6 @@ from traceback import print_exc
 
 import dpkt
 
-
 NODE_1 = '10.0.6.22'
 NODE_2 = '10.0.6.23'
 NODE_3 = '10.0.8.22'
@@ -16,25 +15,31 @@ ALL_NODES = [NODE_1, NODE_2, NODE_3, NODE_4]
 
 
 class PacketsProcessing:
+    """
+    The main and only class
+    """
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
     IGMP_MULTICAST = '224.0.0.1'
-    NUMBER_OF_DIVISIONS = 20 # 17 initially
-    VALUE_OF_DIVISION = 1.0 / 2.0 # in minutes, 254 initially
+    NUMBER_OF_DIVISIONS = 13 # 12 default
+    VALUE_OF_DIVISION = 15240 # in seconds, 15240 default
     REQUESTS_INTERVAL = 0.2
     QUERIES_INTERVAL = 12
+    QUERIES_TOLERANCE = 0.1 # The higher the value, the less strict the tolerance
+    REQUESTS_TOLERANCE = 0.05 # The higher the value, the less strict the tolerance
 
     def __init__(self):
-        self.total_queries = 0
         self.first_udp_round_finished = False
         self.igmp_query_number = None
         self.igmp_query_time = None
-        self.igmp_query_timestamp = 0.0
+        self.igmp_query_unix_time = 0.0
         self.request_id_src = None
         self.last_request_number = None
-        self.pre_request_timestamp = None
+        self.pre_request_unix_time = None
         self.last_request_time = None
-        self.timestamp = None
+        self.numb_of_req_betw_div = 0
+        self.unix_timestamp = None
+        self.division_unix_time = 0.0
         self.last_packet_time = None
         self.igmp_dict = {}
         self.scale_timestamps_objects = []
@@ -44,7 +49,6 @@ class PacketsProcessing:
         self.nodes_state_igmp = {NODE_1: False, NODE_2: False,
                                  NODE_3: False, NODE_4: False}
         self.missing_nodes = []
-        self.all_requests = []
         self.missing_requests = {}
         self.missing_queries = {}
         self.unanswered_requests = {NODE_1: [], NODE_2: [], \
@@ -63,9 +67,29 @@ class PacketsProcessing:
 
     def unix_timestamp_to_string(self, delta):
         last_packet_time_object = datetime.datetime\
-            .utcfromtimestamp(self.timestamp)
+            .utcfromtimestamp(self.unix_timestamp)
         self.last_packet_time = (last_packet_time_object + delta)\
             .strftime('%Y-%m-%d %H:%M:%S.%f')
+
+    def delta_unix_timestamp(self, delta):
+        delta_unix_timestamp_obj = \
+            datetime.datetime.utcfromtimestamp(self.unix_timestamp) + delta
+        utc_delta_unix_timestamp_obj = \
+            delta_unix_timestamp_obj.replace(tzinfo=datetime.timezone.utc)
+        delta_unix_timestamp = utc_delta_unix_timestamp_obj.timestamp()
+        return delta_unix_timestamp
+
+    def check_start_of_scale_validity(self, delta):
+        utc_start_of_scale_obj = \
+            self.scale_timestamps_objects[0]\
+                .replace(tzinfo=datetime.timezone.utc)
+        start_of_scale_unix_time = utc_start_of_scale_obj.timestamp()
+        delta_unix_timestamp = self.delta_unix_timestamp(delta)
+        if start_of_scale_unix_time < delta_unix_timestamp - 1:
+            raise ValueError(
+                'Invalid "start of scale" value. This time must not be '
+                'less than the time of the first packet'
+            )
 
     def read_time_from_hex_data(self, packet_type):
         data = packet_type.data
@@ -77,8 +101,8 @@ class PacketsProcessing:
         return request_time_from_payload
 
     def mark_scale(self, start_of_scale):
-        one_minute = datetime.timedelta(minutes=1)
-        division_delta = self.VALUE_OF_DIVISION * one_minute
+        one_second = datetime.timedelta(seconds=1)
+        division_delta = self.VALUE_OF_DIVISION * one_second
         self.scale_timestamps_objects = [
             start_of_scale + i * division_delta \
                 for i in range(self.NUMBER_OF_DIVISIONS + 1)
@@ -87,6 +111,9 @@ class PacketsProcessing:
             ts.strftime('%Y-%m-%d %H:%M:%S') \
                 for ts in self.scale_timestamps_objects
         ]
+        true_numb_of_req_betw_div = \
+            int(self.VALUE_OF_DIVISION / self.REQUESTS_INTERVAL)
+        return true_numb_of_req_betw_div
 
     def create_missing_data_dict(self):
         missing_data = \
@@ -133,75 +160,81 @@ class PacketsProcessing:
                             delta_string = str(delta)
                             break
 
-        print(f'\nDELTA = {delta_string}\n')
+        print(f'\nDELTA; {delta_string}\n')
         return delta
 
-    def check_last_request_before_division(self, pack_number,
-                                           start_of_scale):
+    def print_missing_requests_interval(self, pack_number, start_of_scale):
         requests_interval = round(
-            self.timestamp - self.pre_request_timestamp, 1)
-        if requests_interval - self.REQUESTS_INTERVAL > 0.1:
-            if start_of_scale:
-                missing_requests = round(
-                    requests_interval / self.REQUESTS_INTERVAL)
-                self.missing_requests[self.scale_timestamps_strings[
-                    self.number_of_division]] += missing_requests
-            else:
-                print(
-                    f'Missing requests - no requests for {requests_interval}'
-                    f's up to #{pack_number}/ {self.last_packet_time}\n'
-                    f'The previous request was #{self.last_request_number}/ '
-                    f'{self.last_request_time}'
-                )
+            self.unix_timestamp - self.pre_request_unix_time, 2)
+        if requests_interval > (self.REQUESTS_INTERVAL + \
+            self.REQUESTS_TOLERANCE) and not start_of_scale:
+            print(
+                f'Missing requests - no requests for {requests_interval}'
+                f's up to #{pack_number}/ {self.last_packet_time}\n'
+                f'The previous request was #{self.last_request_number}/ '
+                f'{self.last_request_time}'
+            )
 
-    def check_last_query_before_division(self, pack_number, start_of_scale):
+    def count_missing_requests_for_last_round(self, delta):
+        utc_division_obj = self.scale_timestamps_objects[
+            self.number_of_division].replace(tzinfo=datetime.timezone.utc)
+        division_unix_time = utc_division_obj.timestamp()
+        delta_unix_timestamp = self.delta_unix_timestamp(delta)
+
+        true_numb_of_req_per_last_round = int((delta_unix_timestamp - \
+            division_unix_time) / self.REQUESTS_INTERVAL)
+        if self.numb_of_req_betw_div < 0.999*true_numb_of_req_per_last_round:
+            self.missing_requests[self.scale_timestamps_strings[
+                self.number_of_division]] = true_numb_of_req_per_last_round \
+                    - self.numb_of_req_betw_div
+
+    def calculate_missing_queries(self, pack_number, start_of_scale):
         queries_interval = round(
-            self.timestamp - self.igmp_query_timestamp, 1)
-        if queries_interval > (self.QUERIES_INTERVAL + 0.1):
-            if not start_of_scale:
+            self.unix_timestamp - self.igmp_query_unix_time, 1)
+        if queries_interval > (self.QUERIES_INTERVAL+self.QUERIES_TOLERANCE):
+            missing_queries = int((queries_interval-self.QUERIES_TOLERANCE) \
+                // self.QUERIES_INTERVAL)
+            if start_of_scale:
+                self.missing_queries[self.scale_timestamps_strings[
+                    self.number_of_division]] += missing_queries
+            else:
                 print(
                     'Missing membership query(s) - no queries for '
                     f'{queries_interval}s up to '
                     f'#{pack_number}/ {self.last_packet_time}\n'
                     f'The previous query was #{self.igmp_query_number}/ '
-                    f'{self.igmp_query_time}'
+                    f'{self.igmp_query_time}\n'
+                    f'{missing_queries} querie(s) missing'
                 )
-            else:
-                missing_queries = \
-                    int((queries_interval - 0.1) // self.QUERIES_INTERVAL)
-                self.missing_queries[self.scale_timestamps_strings[
-                    self.number_of_division]] += missing_queries
-        self.igmp_query_timestamp = self.timestamp
+        self.igmp_query_unix_time = self.unix_timestamp
 
-    def check_for_range(self, pack_number, start_of_scale):
+    def check_for_range(self, start_of_scale, true_numb_of_req_betw_div):
         last_packet_time_object = datetime.datetime\
             .strptime(self.last_packet_time, "%Y-%m-%d %H:%M:%S.%f")
         if start_of_scale > last_packet_time_object:
             return 1
         if last_packet_time_object > self.scale_timestamps_objects[-1]:
             return -1
-        if self.last_request_number and \
-            last_packet_time_object > \
-                self.scale_timestamps_objects[self.number_of_division+1]:
-            self.check_last_request_before_division(pack_number,
-                                                    start_of_scale)
-            if self.igmp_query_number:
-                self.check_last_query_before_division(pack_number,
-                                                      start_of_scale)
-            self.pre_request_timestamp = self.timestamp
+
+        if self.first_udp_round_finished and last_packet_time_object > \
+            self.scale_timestamps_objects[self.number_of_division+1]:
+            if self.numb_of_req_betw_div < 0.999*true_numb_of_req_betw_div:
+                self.missing_requests[self.scale_timestamps_strings[
+                    self.number_of_division]] = \
+                        true_numb_of_req_betw_div - self.numb_of_req_betw_div
             self.number_of_division += 1
+            self.numb_of_req_betw_div = 0
 
     def output_unanswered_request_or_query(self, node, prot, start_of_scale):
-        if prot == 'udp':
-            if not start_of_scale:
+        if not start_of_scale:
+            if prot == 'udp':
                 print(
                     f'{node} not responding for UDP request. Unanswered '
                     f'request is #{self.last_request_number}/ '
                     f'{self.last_request_time}/ request ID '
                     f'{hex(self.request_id_src)}'
                 )
-        elif prot == 'igmp':
-            if not start_of_scale:
+            elif prot == 'igmp':
                 print(
                     f'{node} not responding for membership query. '
                     f'Unanswered query is #{self.igmp_query_number}/ '
@@ -211,30 +244,28 @@ class PacketsProcessing:
     def draw_csv_table(self):
         def format_unanswered(data_dict):
             unanswered_per_node = {}
-            for key, time_list in data_dict.items():
+            for time_list in data_dict.values():
                 if time_list:
                     unanswered_per_node = self.process_time_list(time_list)
-
             return unanswered_per_node
-
         unanswered_req_per_node = format_unanswered(self.unanswered_requests)
         unanswered_que_per_node = format_unanswered(self.unanswered_queries)
 
         combined_dict = {
-            key: [self.missing_requests.get(key),
-                  self.missing_queries.get(key),
-                  unanswered_req_per_node.get(key),
-                  unanswered_que_per_node.get(key)
+            key: [self.missing_requests.get(key, 0),
+                  self.missing_queries.get(key, 0),
+                  unanswered_req_per_node.get(key, 0),
+                  unanswered_que_per_node.get(key, 0)
             ] for key in self.missing_requests
         }
         print(
-            '\nDivision number; Timestamp; '
+            'Timestamp; '
             'Missing requests; Missing queries; Unanswered requests; '
-            'Unanswered queries:\n'
+            'Unanswered queries'
         )
-        for i, (key, value) in enumerate(combined_dict.items(), 1):
+        for key, value in combined_dict.items():
             value_str = '; '.join(map(str, value))
-            print(f'{i}; {key}; {value_str}')
+            print(f'{key}; {value_str}')
 
     def process_time_list(self, time_list):
         unanswered_per_node = {}
@@ -253,18 +284,24 @@ class PacketsProcessing:
                       hanging_nodes):
         delta = self.calculate_delta_from_payload_time(pcap_file,
                                                        payload_time)
+        start_of_scale = start_of_scale + delta
         if start_of_scale:
-            self.mark_scale(start_of_scale)
+            true_numb_of_req_betw_div = self.mark_scale(start_of_scale)
         self.create_missing_data_dict()
 
         pack_number = 0
+        first_packet = False
         with open(pcap_file, 'rb') as f:
             packets = dpkt.pcapng.Reader(f)
-            for self.timestamp, pack in packets:
+            for self.unix_timestamp, pack in packets:
+                if start_of_scale and not first_packet:
+                    self.check_start_of_scale_validity(delta)
+                    first_packet = True
                 pack_number += 1
                 self.unix_timestamp_to_string(delta)
                 if start_of_scale:
-                    r = self.check_for_range(pack_number, start_of_scale)
+                    r = self.check_for_range(start_of_scale,
+                                             true_numb_of_req_betw_div)
                     if r == 1:
                         continue
                     if r == -1:
@@ -282,6 +319,8 @@ class PacketsProcessing:
                 if isinstance(packet_type, dpkt.igmp.IGMP):
                     self.igmp_processing(pack_number, ip, hanging_nodes,
                                          start_of_scale)
+        if start_of_scale:
+            self.count_missing_requests_for_last_round(delta)
         if not start_of_scale:
             self.output_results()
 
@@ -296,9 +335,8 @@ class PacketsProcessing:
             self.udp_server_processing(
                 pack_number, udp_packet, hanging_nodes, start_of_scale)
             self.first_udp_round_finished = True
-            self.pre_request_timestamp = self.timestamp
+            self.pre_request_unix_time = self.unix_timestamp
             self.last_request_time = self.last_packet_time
-            self.all_requests.append(self.last_request_time)
         elif self.first_udp_round_finished and src in ALL_NODES:
             if not self.missing_node_appears_again:
                 self.udp_nodes_processing(udp_packet, src)
@@ -310,13 +348,12 @@ class PacketsProcessing:
             self.udp_when_all_respond(start_of_scale)
         else:
             self.request_not_answered(hanging_nodes, start_of_scale)
-
+        self.numb_of_req_betw_div += 1
         if self.first_udp_round_finished:
+            # reset response states of all nodes to False
             self.nodes_state_udp = {
-                # reset response states of all nodes to False
                 node: False for node in self.nodes_state_udp}
-            self.check_last_request_before_division(pack_number,
-                                                    start_of_scale)
+            self.print_missing_requests_interval(pack_number, start_of_scale)
 
         if hasattr(udp_packet, 'data'):
             self.extract_data_from_udp_request(pack_number, udp_packet)
@@ -418,7 +455,7 @@ class PacketsProcessing:
                     f'First membership query is #{pack_number}/ '
                     f'{self.last_packet_time}\n'
                 )
-            self.igmp_query_timestamp = self.timestamp
+            self.igmp_query_unix_time = self.unix_timestamp
         else:
             for node in hanging_nodes:
                 if self.nodes_state_igmp.get(node, True):
@@ -432,8 +469,8 @@ class PacketsProcessing:
                 self.unanswered_queries[node].append(
                     unanswered_query_timestamp)
 
-            self.check_last_query_before_division(pack_number,
-                                                  start_of_scale)
+            self.calculate_missing_queries(pack_number,
+                                           start_of_scale)
 
         self.igmp_query_number = pack_number
         self.igmp_query_time = self.last_packet_time
@@ -502,7 +539,7 @@ def main():
         description='Analysis of UDP and IGMP packets in PCAP files')
     parser.add_argument('pcap_file', help='path to the pcap file')
     parser.add_argument('--csv', metavar='start_of_scale',
-        help='enable csv generation with specified start scale value',
+        help='enable csv generation with specified start of scale value',
         type=valid_csv)
     parser.add_argument('-H', '--hanging', type=valid_nodes, nargs='+',
         metavar='ip_address', help='specify the hanging nodes')
