@@ -21,7 +21,7 @@ class PacketsProcessing:
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
     IGMP_MULTICAST = '224.0.0.1'
-    NUMBER_OF_DIVISIONS = 13 # 12 default
+    NUMBER_OF_DIVISIONS = 16
     VALUE_OF_DIVISION = 15240 # in seconds, 15240 default
     REQUESTS_INTERVAL = 0.2
     QUERIES_INTERVAL = 12
@@ -241,31 +241,63 @@ class PacketsProcessing:
                     f'{self.igmp_query_time}'
                 )
 
-    def draw_csv_table(self):
-        def format_unanswered(data_dict):
-            unanswered_per_node = {}
-            for time_list in data_dict.values():
-                if time_list:
-                    unanswered_per_node = self.process_time_list(time_list)
-            return unanswered_per_node
-        unanswered_req_per_node = format_unanswered(self.unanswered_requests)
-        unanswered_que_per_node = format_unanswered(self.unanswered_queries)
-
-        combined_dict = {
-            key: [self.missing_requests.get(key, 0),
-                  self.missing_queries.get(key, 0),
-                  unanswered_req_per_node.get(key, 0),
-                  unanswered_que_per_node.get(key, 0)
-            ] for key in self.missing_requests
-        }
-        print(
-            'Timestamp; '
-            'Missing requests; Missing queries; Unanswered requests; '
-            'Unanswered queries'
+    def draw_csv_table(self, hanging_nodes):
+        unansw_req_on_scale_all_nodes = \
+            self.format_unanswered(self.unanswered_requests, hanging_nodes)
+        unansw_quer_on_scale_all_nodes = \
+            self.format_unanswered(self.unanswered_queries, hanging_nodes)
+        combined_dict = self.make_combined_dictionary(
+            hanging_nodes, unansw_req_on_scale_all_nodes,
+            unansw_quer_on_scale_all_nodes
         )
+
+        title_string_parts = [
+            'Timestamp', 'Missing requests', 'Missing queries',
+        ]
+        title_string_parts += \
+            [f'Unanswered requests {node}' for node in hanging_nodes]
+        title_string_parts += \
+            [f'Unanswered queries {node}' for node in hanging_nodes]
+        title_string = '; '.join(title_string_parts)
+        print(title_string)
+
         for key, value in combined_dict.items():
             value_str = '; '.join(map(str, value))
             print(f'{key}; {value_str}')
+
+    def make_combined_dictionary(self, hanging_nodes, requests, queries):
+        combined_dict = {}
+        for key in self.missing_requests:
+            missing_req_per_scale = self.missing_requests.get(key, 0)
+            missing_queries_per_scale = self.missing_queries.get(key, 0)
+            unansw_req_values = []
+            unansw_query_values = []
+
+            for node in hanging_nodes:
+                unansw_req_per_node_per_scale = \
+                    requests.get(node, {}).get(key, 0)
+                unansw_query_per_node_per_scale = \
+                    queries.get(node, {}).get(key, 0)
+                unansw_req_values.append(unansw_req_per_node_per_scale)
+                unansw_query_values.append(unansw_query_per_node_per_scale)
+            combined_values = \
+                [missing_req_per_scale, missing_queries_per_scale] + \
+                    unansw_req_values + unansw_query_values
+            combined_dict[key] = combined_values
+
+        return combined_dict
+
+    def format_unanswered(self, data_dict, hanging_nodes):
+        unanswered_per_node = {}
+        unanswered_all_nodes = {}
+        for node in hanging_nodes:
+            for key, time_list in data_dict.items():
+                if key == node and time_list:
+                    unanswered_per_node = \
+                        self.process_time_list(time_list)
+            unanswered_all_nodes[node] = unanswered_per_node
+            unanswered_per_node = {}
+        return unanswered_all_nodes
 
     def process_time_list(self, time_list):
         unanswered_per_node = {}
@@ -284,8 +316,8 @@ class PacketsProcessing:
                       hanging_nodes):
         delta = self.calculate_delta_from_payload_time(pcap_file,
                                                        payload_time)
-        start_of_scale = start_of_scale + delta
         if start_of_scale:
+            start_of_scale = start_of_scale + delta
             true_numb_of_req_betw_div = self.mark_scale(start_of_scale)
         self.create_missing_data_dict()
 
@@ -551,7 +583,7 @@ def main():
         pcap_object.udp_dump_pcap(args.pcap_file, args.csv,
                                   args.payload, args.hanging)
         if args.csv:
-            pcap_object.draw_csv_table()
+            pcap_object.draw_csv_table(args.hanging)
         sys.exit(0)
     except FileNotFoundError as fe:
         print(fe)
