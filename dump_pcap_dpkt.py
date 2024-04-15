@@ -21,8 +21,8 @@ class PacketsProcessing:
     MULTICAST_IP = '239.192.1.17'
     DPORT = 49297
     IGMP_MULTICAST = '224.0.0.1'
-    NUMBER_OF_DIVISIONS = 16
-    VALUE_OF_DIVISION = 15240 # in seconds, 15240 default
+    NUMBER_OF_DIVISIONS = 18
+    VALUE_OF_DIVISION = 14400 # in seconds, 15240 default
     REQUESTS_INTERVAL = 0.2
     QUERIES_INTERVAL = 12
     QUERIES_TOLERANCE = 0.1 # The higher the value, the less strict the tolerance
@@ -79,13 +79,12 @@ class PacketsProcessing:
         delta_unix_timestamp = utc_delta_unix_timestamp_obj.timestamp()
         return delta_unix_timestamp
 
-    def check_start_of_scale_validity(self, delta):
+    def check_start_of_scale_validity(self):
         utc_start_of_scale_obj = \
             self.scale_timestamps_objects[0]\
                 .replace(tzinfo=datetime.timezone.utc)
         start_of_scale_unix_time = utc_start_of_scale_obj.timestamp()
-        delta_unix_timestamp = self.delta_unix_timestamp(delta)
-        if start_of_scale_unix_time < delta_unix_timestamp - 1:
+        if start_of_scale_unix_time < self.unix_timestamp - 1:
             raise ValueError(
                 'Invalid "start of scale" value. This time must not be '
                 'less than the time of the first packet'
@@ -113,6 +112,7 @@ class PacketsProcessing:
         ]
         true_numb_of_req_betw_div = \
             int(self.VALUE_OF_DIVISION / self.REQUESTS_INTERVAL)
+
         return true_numb_of_req_betw_div
 
     def create_missing_data_dict(self):
@@ -317,7 +317,6 @@ class PacketsProcessing:
         delta = self.calculate_delta_from_payload_time(pcap_file,
                                                        payload_time)
         if start_of_scale:
-            start_of_scale = start_of_scale + delta
             true_numb_of_req_betw_div = self.mark_scale(start_of_scale)
         self.create_missing_data_dict()
 
@@ -327,7 +326,7 @@ class PacketsProcessing:
             packets = dpkt.pcapng.Reader(f)
             for self.unix_timestamp, pack in packets:
                 if start_of_scale and not first_packet:
-                    self.check_start_of_scale_validity(delta)
+                    self.check_start_of_scale_validity()
                     first_packet = True
                 pack_number += 1
                 self.unix_timestamp_to_string(delta)
@@ -551,7 +550,7 @@ class PacketsProcessing:
                 print(f'No membership reports from {src} at all')
 
 
-def valid_csv(s):
+def check_csv_validity(s):
     try:
         return datetime.datetime.strptime(s, "%Y-%m-%d %H:%M:%S.%f")
     except ValueError as exc:
@@ -559,7 +558,7 @@ def valid_csv(s):
 Format must be YYYY-MM-DD HH:MM:SS.ssssss"
         raise argparse.ArgumentTypeError(msg) from exc
 
-def valid_nodes(s):
+def check_nodes_validity(s):
     if s in ALL_NODES:
         return s
     raise argparse.ArgumentTypeError(
@@ -572,9 +571,9 @@ def main():
     parser.add_argument('pcap_file', help='path to the pcap file')
     parser.add_argument('--csv', metavar='start_of_scale',
         help='enable csv generation with specified start of scale value',
-        type=valid_csv)
-    parser.add_argument('-H', '--hanging', type=valid_nodes, nargs='+',
-        metavar='ip_address', help='specify the hanging nodes')
+        type=check_csv_validity)
+    parser.add_argument('-H', '--hanging', type=check_nodes_validity,
+        nargs='+', metavar='ip_address', help='specify the hanging nodes')
     parser.add_argument('-P', '--payload', action='store_true',
         help='convert time to payload time')
     args = parser.parse_args()
